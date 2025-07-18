@@ -303,6 +303,67 @@
   )
 )
 
+;; Advanced milestone-based funding release system
+;; This function enables sophisticated fund management with automatic milestone validation
+;; and progressive fund release based on campaign performance metrics
+(define-public (process-milestone-validation-and-fund-release 
+  (campaign-id uint) 
+  (milestone-id uint)
+  (performance-metrics (list 3 uint))
+  (community-approval-threshold uint)
+)
+  (let (
+    (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+    (milestone (unwrap! (map-get? campaign-milestones { campaign-id: campaign-id, milestone-id: milestone-id }) err-not-found))
+    (total-backers (get-campaign-backer-count campaign-id))
+    (approval-votes (fold + performance-metrics u0))
+    (approval-percentage (if (> total-backers u0) (/ (* approval-votes u100) total-backers) u0))
+    (milestone-funding (get funding-threshold milestone))
+    (progressive-release-amount (calculate-progressive-release milestone-funding approval-percentage))
+    (platform-fee (calculate-platform-fee progressive-release-amount))
+    (creator-release (- progressive-release-amount platform-fee))
+    (bonus-multiplier (if (>= approval-percentage u90) u110 u100)) ;; 10% bonus for 90%+ approval
+    (final-creator-amount (/ (* creator-release bonus-multiplier) u100))
+  )
+    ;; Validate permissions and milestone state
+    (asserts! (is-eq tx-sender (get creator campaign)) err-unauthorized)
+    (asserts! (get is-successful campaign) err-campaign-failed)
+    (asserts! (not (get is-completed milestone)) err-already-claimed)
+    (asserts! (>= approval-percentage community-approval-threshold) err-milestone-not-reached)
+    (asserts! (>= (get current-funding campaign) milestone-funding) err-insufficient-funds)
+    
+    ;; Advanced milestone completion with performance tracking
+    (map-set campaign-milestones
+      { campaign-id: campaign-id, milestone-id: milestone-id }
+      (merge milestone { 
+        is-completed: true,
+        completion-block: block-height
+      })
+    )
+    
+    ;; Update campaign with enhanced metrics
+    (map-set campaigns
+      { campaign-id: campaign-id }
+      (merge campaign { 
+        milestones-completed: (+ (get milestones-completed campaign) u1)
+      })
+    )
+    
+    ;; Execute progressive fund release with community validation
+    (try! (as-contract (stx-transfer? final-creator-amount tx-sender (get creator campaign))))
+    (var-set platform-treasury (+ (var-get platform-treasury) platform-fee))
+    
+    ;; Return comprehensive release information
+    (ok {
+      milestone-id: milestone-id,
+      released-amount: final-creator-amount,
+      approval-percentage: approval-percentage,
+      bonus-applied: (> bonus-multiplier u100),
+      platform-fee: platform-fee
+    })
+  )
+)
+
 ;; Helper function for progressive release calculation
 (define-private (calculate-progressive-release (base-amount uint) (approval-percentage uint))
   (if (>= approval-percentage u75)
